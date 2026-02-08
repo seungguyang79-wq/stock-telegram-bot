@@ -388,11 +388,11 @@ if __name__ == "__main__":
     keep_alive()
     
     # 스케줄 설정
-    schedule.every().day.at("06:02").do(job)
-    schedule.every().day.at("09:02").do(job)
-    schedule.every().day.at("12:02").do(job)
-    schedule.every().day.at("15:42").do(job)
-    schedule.every().day.at("22:41").do(job)
+    schedule.every().day.at("06:00").do(job)
+    schedule.every().day.at("09:00").do(job)
+    schedule.every().day.at("12:00").do(job)
+    schedule.every().day.at("15:40").do(job)
+    schedule.every().day.at("22:30").do(job)
     
     # 시작 메시지
     send_telegram_message("✅ 봇이 Render 서버에서 성공적으로 실행되었습니다!\n🔔 매일5번리포트와 차트를 보내드립니다.")
