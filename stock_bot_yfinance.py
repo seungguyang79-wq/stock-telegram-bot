@@ -10,6 +10,7 @@ import yfinance as yf
 import requests
 import schedule
 import time
+import os
 from datetime import datetime, timedelta
 
 # ========== 설정 ==========
