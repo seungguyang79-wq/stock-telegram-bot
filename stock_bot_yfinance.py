@@ -5,7 +5,7 @@
 - 한국, 미국, 홍콩 시장 지수
 - 수익률 분석 포함
 """
-
+import os
 import yfinance as yf
 import requests
 import schedule
