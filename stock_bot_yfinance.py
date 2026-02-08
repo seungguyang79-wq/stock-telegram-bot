@@ -39,28 +39,28 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "417485629")
 
 # 관심 종목
 INTEREST_STOCKS_KR = {
-    "005930.KS": "삼성전자", 
-    "000660.KS": "SK하이닉스",
-    "005380.KS": "현대차",
-    "035420.KS": "네이버"
+    "005930.KS": "SEC",
+    "000660.KS": "HYNIX",
+    "005380.KS": "HYUNDAI MOTORS",
+    "035420.KS": "NAVER"
 
 }
 
 INTEREST_STOCKS_US = {
-    "AAPL": "애플", 
-    "TSLA": "테슬라", 
-    "NVDA": "엔비디아",
-    "GOOGL": "구글"
+    "AAPL": "AAPLE", 
+    "TSLA": "TESLA", 
+    "NVDA": "NVDIA",
+    "GOOGL": "GOOGLE"
 }
 
 CRYPTO = {
-    "BTC-USD": "비트코인",
-    "ETH-USD": "이더리움"
+    "BTC-USD": "Bitcoin",
+    "ETH-USD": "Etherium"
 }
 
 PRECIOUS_METALS = {
-    "GC=F": "금",
-    "SI=F": "은"
+    "GC=F": "GOLD",
+    "SI=F": "SILVER"
 }
 
 def send_telegram_message(message):
