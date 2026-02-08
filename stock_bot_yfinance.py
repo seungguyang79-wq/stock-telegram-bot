@@ -5,6 +5,7 @@ import schedule
 import time
 from datetime import datetime
 
+
 # ========== 설정 (환경 변수 권장) ==========
 # Render 설정에서 아래 이름으로 변수를 등록하세요.
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
