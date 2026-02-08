@@ -41,12 +41,16 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "417485629")
 INTEREST_STOCKS_KR = {
     "005930.KS": "삼성전자", 
     "000660.KS": "SK하이닉스"
+    "005380.KS": "현대차"
+    "035420.KS": "네이버"
+
 }
 
 INTEREST_STOCKS_US = {
     "AAPL": "애플", 
     "TSLA": "테슬라", 
     "NVDA": "엔비디아"
+    "GOOGL": "구글"
 }
 
 CRYPTO = {
@@ -384,11 +388,14 @@ if __name__ == "__main__":
     keep_alive()
     
     # 스케줄 설정
-    schedule.every().day.at("09:00").do(job)
-    schedule.every().day.at("15:40").do(job)
+    schedule.every().day.at("06:02").do(job)
+    schedule.every().day.at("09:02").do(job)
+    schedule.every().day.at("12:02").do(job)
+    schedule.every().day.at("15:42").do(job)
+    schedule.every().day.at("23:32").do(job)
     
     # 시작 메시지
-    send_telegram_message("✅ 봇이 Render 서버에서 성공적으로 실행되었습니다!\n🔔 매일 09:00, 15:40에 리포트와 차트를 보내드립니다.")
+    send_telegram_message("✅ 봇이 Render 서버에서 성공적으로 실행되었습니다!\n🔔 매일5번리포트와 차트를 보내드립니다.")
     
     print("🤖 봇이 실행 중입니다...")
     
