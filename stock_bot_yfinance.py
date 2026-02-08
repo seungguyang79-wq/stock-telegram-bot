@@ -40,8 +40,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "417485629")
 # 관심 종목
 INTEREST_STOCKS_KR = {
     "005930.KS": "삼성전자", 
-    "000660.KS": "SK하이닉스"
-    "005380.KS": "현대차"
+    "000660.KS": "SK하이닉스",
+    "005380.KS": "현대차",
     "035420.KS": "네이버"
 
 }
@@ -49,7 +49,7 @@ INTEREST_STOCKS_KR = {
 INTEREST_STOCKS_US = {
     "AAPL": "애플", 
     "TSLA": "테슬라", 
-    "NVDA": "엔비디아"
+    "NVDA": "엔비디아",
     "GOOGL": "구글"
 }
 
