@@ -13,8 +13,8 @@ import time
 from datetime import datetime, timedelta
 
 # ========== 설정 ==========
-TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
-TELEGRAM_CHAT_ID = "YOUR_CHAT_ID_HERE"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID_HERE")
 
 # 관심 종목 설정 (개수를 줄였습니다)
 INTEREST_STOCKS_KR = {
