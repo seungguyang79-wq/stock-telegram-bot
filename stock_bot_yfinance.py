@@ -4,6 +4,25 @@ import requests
 import schedule
 import time
 from datetime import datetime
+from flask import Flask
+from threading import Thread
+
+app = Flask('')
+
+@app.route('/')
+def home():
+return "Bot is running!"
+
+def run_server():
+# Render는 PORT 환경 변수를 사용해 서버를 체크합니다.
+port = int(os.environ.get("PORT", 10000))
+app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+# 별도의 쓰레드에서 서버를 실행하여 봇 스케줄러와 동시에 작동하게 함
+t = Thread(target=run_server)
+t.daemon = True
+t.start()
 
 
 # ========== 설정 (환경 변수 권장) ==========
