@@ -300,8 +300,13 @@ if __name__ == "__main__":
     keep_alive()
     
     # 스케줄 설정
+    schedule.every().day.at("06:00").do(job)
     schedule.every().day.at("09:00").do(job)
+    schedule.every().day.at("11:30").do(job)
+    schedule.every().day.at("13:30").do(job)
     schedule.every().day.at("15:40").do(job)
+    schedule.every().day.at("20:40").do(job)
+    schedule.every().day.at("22:30").do(job)
     
     # 시작 메시지
     chart_msg = " (차트 포함)" if ENABLE_CHARTS else ""
