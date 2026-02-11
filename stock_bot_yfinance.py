@@ -6,6 +6,13 @@ import time
 from datetime import datetime
 from flask import Flask
 from threading import Thread
+import io
+import gc
+
+# matplotlib 설정
+import matplotlib
+matplotlib.use('Agg')  # 서버 환경용
+import matplotlib.pyplot as plt
 
 # Flask 서버
 app = Flask(__name__)
@@ -70,13 +77,33 @@ def send_message(text, chat_id=None):
             "parse_mode": "HTML"
         }, timeout=10)
         if r.status_code == 200:
-            print(f"✅ 메시지 전송 성공: {datetime.now().strftime('%H:%M:%S')}")
+            print(f"✅ 메시지 전송 성공")
             return True
         else:
             print(f"❌ 메시지 전송 실패: {r.status_code}")
             return False
     except Exception as e:
         print(f"❌ 전송 오류: {e}")
+        return False
+
+def send_photo(image_buffer, caption="", chat_id=None):
+    """텔레그램 이미지 전송"""
+    if chat_id is None:
+        chat_id = TELEGRAM_CHAT_ID
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    try:
+        files = {'photo': ('chart.png', image_buffer, 'image/png')}
+        data = {'chat_id': chat_id, 'caption': caption}
+        response = requests.post(url, files=files, data=data, timeout=30)
+        if response.status_code == 200:
+            print(f"✅ 이미지 전송 성공")
+            return True
+        else:
+            print(f"❌ 이미지 전송 실패: {response.text}")
+            return False
+    except Exception as e:
+        print(f"❌ 이미지 전송 오류: {e}")
         return False
 
 def get_price(symbol, name, market):
@@ -136,6 +163,130 @@ def get_exchange_rate():
             
             return f"💱 <b>환율</b>\n🇺🇸 USD: {usd_krw:,.2f}원\n🇯🇵 JPY(100): {jpy_krw:,.2f}원"
     except:
+        return None
+
+def create_chart():
+    """30일 수익률 차트 생성"""
+    try:
+        print("📊 차트 생성 중...")
+        
+        # 수익률 계산
+        returns = {}
+        all_assets = {**STOCKS_KR, **STOCKS_US, **CRYPTO, **METALS}
+        
+        for symbol, name in all_assets.items():
+            try:
+                asset = yf.Ticker(symbol)
+                hist = asset.history(period="1mo")
+                
+                if len(hist) >= 2:
+                    first = hist['Close'].iloc[0]
+                    last = hist['Close'].iloc[-1]
+                    ret = ((last - first) / first) * 100
+                    returns[name] = ret
+                    
+            except Exception as e:
+                print(f"❌ {name} 차트 데이터 오류: {e}")
+                continue
+            
+            time.sleep(0.2)
+        
+        if not returns:
+            print("❌ 차트 데이터 없음")
+            return None
+        
+        # 차트 생성
+        fig, ax = plt.subplots(figsize=(10, 8))
+        
+        names = list(returns.keys())
+        values = list(returns.values())
+        colors = ['#2ecc71' if v > 0 else '#e74c3c' for v in values]
+        
+        # 가로 막대 그래프
+        bars = ax.barh(names, values, color=colors, alpha=0.8, edgecolor='black', linewidth=0.5)
+        
+        # 스타일링
+        ax.set_xlabel('Return (%)', fontsize=12, fontweight='bold')
+        ax.set_title('30-Day Returns', fontsize=16, fontweight='bold', pad=20)
+        ax.axvline(x=0, color='black', linestyle='-', linewidth=1)
+        ax.grid(True, alpha=0.3, axis='x')
+        
+        # 값 표시
+        for i, (name, value) in enumerate(zip(names, values)):
+            ax.text(value, i, f' {value:+.1f}%', 
+                   va='center', fontsize=9, fontweight='bold')
+        
+        plt.tight_layout()
+        
+        # 이미지를 메모리에 저장
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+        buf.seek(0)
+        
+        # 메모리 해제
+        plt.close('all')
+        gc.collect()
+        
+        print("✅ 차트 생성 완료")
+        return buf
+        
+    except Exception as e:
+        print(f"❌ 차트 생성 오류: {e}")
+        plt.close('all')
+        gc.collect()
+        return None
+
+def create_price_trend_chart(symbol, name, period="1mo"):
+    """개별 종목 가격 추세 차트"""
+    try:
+        print(f"📊 {name} 차트 생성 중...")
+        
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period=period)
+        
+        if hist.empty:
+            return None
+        
+        # 차트 생성
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        # 가격 선 그래프
+        ax.plot(hist.index, hist['Close'], linewidth=2, color='#3498db', label='Price')
+        
+        # 스타일링
+        ax.set_title(f'{name} - 30 Day Price Trend', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Date', fontsize=10)
+        ax.set_ylabel('Price', fontsize=10)
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        
+        # 현재가와 변화율 표시
+        current = hist['Close'].iloc[-1]
+        first = hist['Close'].iloc[0]
+        change = ((current - first) / first) * 100
+        
+        ax.text(0.02, 0.98, f'Current: {current:.2f}\nChange: {change:+.2f}%',
+               transform=ax.transAxes, fontsize=11, verticalalignment='top',
+               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
+        plt.tight_layout()
+        
+        # 이미지 저장
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+        buf.seek(0)
+        
+        # 메모리 해제
+        plt.close('all')
+        gc.collect()
+        
+        print(f"✅ {name} 차트 완료")
+        return buf
+        
+    except Exception as e:
+        print(f"❌ {name} 차트 오류: {e}")
+        plt.close('all')
+        gc.collect()
         return None
 
 def create_full_report():
@@ -199,12 +350,16 @@ def handle_command(text, chat_id):
             "코인 - 암호화폐\n"
             "금속 - 귀금속\n"
             "환율 - 환율 정보\n\n"
+            "📈 <b>차트</b>\n"
+            "차트 - 30일 수익률 차트\n"
+            "삼성차트 - 삼성전자 추세\n"
+            "애플차트 - 애플 추세\n"
+            "비트차트 - 비트코인 추세\n\n"
             "💰 <b>개별 종목</b>\n"
             "삼성 - 삼성전자 상세\n"
             "애플 - 애플 상세\n"
             "테슬라 - 테슬라 상세\n"
-            "비트 - 비트코인 상세\n"
-            "금 - 금 시세\n\n"
+            "비트 - 비트코인 상세\n\n"
             "⏰ <b>자동 알림</b>\n"
             "매일 09:00, 15:40 자동 전송"
         )
@@ -216,6 +371,53 @@ def handle_command(text, chat_id):
         send_message("📊 리포트 생성 중...", chat_id)
         msg = create_full_report()
         send_message(msg, chat_id)
+        return
+    
+    # 수익률 차트
+    if text in ['차트', 'chart', '수익률']:
+        send_message("📊 차트 생성 중... (30초 소요)", chat_id)
+        chart = create_chart()
+        if chart:
+            send_photo(chart, caption="📊 30일 수익률 비교", chat_id=chat_id)
+        else:
+            send_message("❌ 차트 생성 실패", chat_id)
+        return
+    
+    # 개별 종목 차트
+    if '삼성차트' in text or '삼성 차트' in text:
+        send_message("📊 삼성전자 차트 생성 중...", chat_id)
+        chart = create_price_trend_chart("005930.KS", "삼성전자")
+        if chart:
+            send_photo(chart, caption="📈 삼성전자 30일 추세", chat_id=chat_id)
+        else:
+            send_message("❌ 차트 생성 실패", chat_id)
+        return
+    
+    if '애플차트' in text or '애플 차트' in text:
+        send_message("📊 애플 차트 생성 중...", chat_id)
+        chart = create_price_trend_chart("AAPL", "애플")
+        if chart:
+            send_photo(chart, caption="📈 애플 30일 추세", chat_id=chat_id)
+        else:
+            send_message("❌ 차트 생성 실패", chat_id)
+        return
+    
+    if '테슬라차트' in text or '테슬라 차트' in text:
+        send_message("📊 테슬라 차트 생성 중...", chat_id)
+        chart = create_price_trend_chart("TSLA", "테슬라")
+        if chart:
+            send_photo(chart, caption="📈 테슬라 30일 추세", chat_id=chat_id)
+        else:
+            send_message("❌ 차트 생성 실패", chat_id)
+        return
+    
+    if '비트차트' in text or '비트 차트' in text or '비트코인차트' in text:
+        send_message("📊 비트코인 차트 생성 중...", chat_id)
+        chart = create_price_trend_chart("BTC-USD", "비트코인")
+        if chart:
+            send_photo(chart, caption="📈 비트코인 30일 추세", chat_id=chat_id)
+        else:
+            send_message("❌ 차트 생성 실패", chat_id)
         return
     
     # 한국 주식
@@ -369,7 +571,7 @@ def scheduled_job():
 
 if __name__ == "__main__":
     print("\n" + "="*50)
-    print("🚀 글로벌 투자 알림 봇")
+    print("🚀 글로벌 투자 알림 봇 (차트 기능 포함)")
     print("="*50 + "\n")
     
     # Flask 시작
@@ -379,17 +581,23 @@ if __name__ == "__main__":
     
     # 스케줄 설정
     print("2️⃣ 스케줄 설정...")
-    schedule.every().day.at("09:00").do(scheduled_job)
-    schedule.every().day.at("15:40").do(scheduled_job)
-    print("✅ 완료 (09:00, 15:40)\n")
+    schedule.every().day.at("06:00").do(job)
+    schedule.every().day.at("09:00").do(job)
+    schedule.every().day.at("11:30").do(job)
+    schedule.every().day.at("13:30").do(job)
+    schedule.every().day.at("15:40").do(job)
+    schedule.every().day.at("20:40").do(job)
+    schedule.every().day.at("22:30").do(job)
+    print("✅ 완료 (06:00, 09:00, 11:30, 13:30, 15:40, 20:40, 22:30)\n")
     
     # 시작 알림
     print("3️⃣ 시작 알림...")
     send_message(
-        "✅ <b>봇 시작!</b>\n\n"
+        "✅ <b>봇 시작! (차트 기능 포함)</b>\n\n"
         "💬 <b>명령어:</b>\n"
         "• 전체 - 전체 리포트\n"
-        "• 삼성, 애플, 비트 - 상세 정보\n"
+        "• 차트 - 30일 수익률 차트\n"
+        "• 삼성차트 - 삼성전자 추세\n"
         "• 도움말 - 전체 명령어\n\n"
         "⏰ <b>자동 알림:</b> 09:00, 15:40"
     )
@@ -397,6 +605,7 @@ if __name__ == "__main__":
     
     print("="*50)
     print("🤖 봇 실행 중 (5초마다 메시지 확인)")
+    print("📊 차트 기능 활성화")
     print("="*50 + "\n")
     
     # 메인 루프
@@ -409,5 +618,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n👋 봇 종료")
     except Exception as e:
-        print(f"\n❌오류: {e}")
+        print(f"\n❌ 오류: {e}")
         send_message(f"🚨 봇 오류: {str(e)}")
