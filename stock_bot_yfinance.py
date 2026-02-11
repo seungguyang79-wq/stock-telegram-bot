@@ -3,26 +3,29 @@ import yfinance as yf
 import requests
 import schedule
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from flask import Flask
 from threading import Thread
-import matplotlib
-matplotlib.use('Agg')  # 서버 환경용
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from matplotlib import font_manager, rc
-import io
 
-# 한글 폰트 설정 (matplotlib)
-plt.rcParams['font.family'] = 'DejaVu Sans'
-plt.rcParams['axes.unicode_minus'] = False
+# 차트 생성은 선택적으로
+ENABLE_CHARTS = os.getenv("ENABLE_CHARTS", "false").lower() == "true"
 
-# Render 포트 바인딩 해결을 위한 Flask 서버 설정
+if ENABLE_CHARTS:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import io
+
+# Flask 서버
 app = Flask(__name__)
 
 @app.route('/')
 def home():
     return "Bot is running!"
+
+@app.route('/health')
+def health():
+    return "OK", 200
 
 def run_server():
     port = int(os.environ.get("PORT", 10000))
@@ -39,28 +42,29 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "417485629")
 
 # 관심 종목
 INTEREST_STOCKS_KR = {
-    "005930.KS": "SEC",
-    "000660.KS": "HYNIX",
-    "005380.KS": "HYUNDAI MOTORS",
-    "035420.KS": "NAVER"
-
+    "005930.KS": "삼성전자", 
+    "000660.KS": "SK하이닉스"
 }
 
 INTEREST_STOCKS_US = {
-    "AAPL": "AAPLE", 
-    "TSLA": "TESLA", 
-    "NVDA": "NVDIA",
-    "GOOGL": "GOOGLE"
+    "AAPL": "애플", 
+    "TSLA": "테슬라", 
+    "NVDA": "엔비디아"
 }
 
 CRYPTO = {
-    "BTC-USD": "Bitcoin",
-    "ETH-USD": "Etherium"
+    "BTC-USD": "비트코인",
+    "ETH-USD": "이더리움"
 }
 
 PRECIOUS_METALS = {
-    "GC=F": "GOLD",
-    "SI=F": "SILVER"
+    "GC=F": "금",
+    "SI=F": "은"
+}
+
+CURRENCIES = {
+    "KRW=X": "달러/원",
+    "JPYKRW=X": "100엔/원"
 }
 
 def send_telegram_message(message):
@@ -68,10 +72,16 @@ def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
-        requests.post(url, data=payload)
-        print(f"✅ 메시지 전송 성공: {datetime.now()}")
+        response = requests.post(url, data=payload)
+        if response.status_code == 200:
+            print(f"✅ 메시지 전송 성공: {datetime.now()}")
+            return True
+        else:
+            print(f"❌ 메시지 전송 실패: {response.text}")
+            return False
     except Exception as e:
         print(f"❌ Error: {e}")
+        return False
 
 def send_telegram_photo(image_buffer, caption=""):
     """텔레그램 이미지 전송"""
@@ -82,10 +92,13 @@ def send_telegram_photo(image_buffer, caption=""):
         response = requests.post(url, files=files, data=data)
         if response.status_code == 200:
             print(f"✅ 이미지 전송 성공: {datetime.now()}")
+            return True
         else:
             print(f"❌ 이미지 전송 실패: {response.text}")
+            return False
     except Exception as e:
         print(f"❌ Error: {e}")
+        return False
 
 def get_stock_info(symbol, name, market="US"):
     """주식 정보 조회"""
@@ -138,68 +151,42 @@ def get_metal_info(symbol, name):
         print(f"❌ {name} 오류: {e}")
         return None
 
-def create_price_chart():
-    """가격 추세 차트 생성"""
+def get_currency_info(symbol, name):
+    """환율 정보 조회"""
+    try:
+        url = "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json"
+        response = requests.get(url, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            usd_to_krw = data['usd'].get('krw', 0)
+            jpy_rate = data['usd'].get('jpy', 0)
+            
+            if "KRW" in symbol:
+                return f"💱 {name}: {usd_to_krw:,.2f}원"
+            elif "JPY" in symbol:
+                jpy_krw = (usd_to_krw / jpy_rate) * 100 if jpy_rate else 0
+                return f"💱 {name}: {jpy_krw:,.2f}원"
+    except Exception as e:
+        print(f"❌ 환율 조회 오류: {e}")
+        return None
+
+def create_simple_chart():
+    """간단한 차트 생성 (메모리 절약)"""
+    if not ENABLE_CHARTS:
+        return None
+    
     try:
         print("📊 차트 생성 중...")
+        import matplotlib.pyplot as plt
+        import io
         
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-        fig.suptitle('Investment Dashboard - 30 Days Trend', fontsize=16, fontweight='bold')
+        fig, ax = plt.subplots(figsize=(10, 6))
         
-        # 1. 미국 주식 차트
-        ax1 = axes[0, 0]
-        for symbol, name in INTEREST_STOCKS_US.items():
-            try:
-                stock = yf.Ticker(symbol)
-                hist = stock.history(period="1mo")
-                if not hist.empty:
-                    ax1.plot(hist.index, hist['Close'], label=name, linewidth=2)
-            except:
-                pass
-        ax1.set_title('US Stocks (30 Days)', fontweight='bold')
-        ax1.set_xlabel('Date')
-        ax1.set_ylabel('Price (USD)')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        
-        # 2. 암호화폐 차트
-        ax2 = axes[0, 1]
-        for symbol, name in CRYPTO.items():
-            try:
-                crypto = yf.Ticker(symbol)
-                hist = crypto.history(period="1mo")
-                if not hist.empty:
-                    ax2.plot(hist.index, hist['Close'], label=name, linewidth=2)
-            except:
-                pass
-        ax2.set_title('Cryptocurrency (30 Days)', fontweight='bold')
-        ax2.set_xlabel('Date')
-        ax2.set_ylabel('Price (USD)')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        
-        # 3. 귀금속 차트
-        ax3 = axes[1, 0]
-        for symbol, name in PRECIOUS_METALS.items():
-            try:
-                metal = yf.Ticker(symbol)
-                hist = metal.history(period="1mo")
-                if not hist.empty:
-                    ax3.plot(hist.index, hist['Close'], label=name, linewidth=2)
-            except:
-                pass
-        ax3.set_title('Precious Metals (30 Days)', fontweight='bold')
-        ax3.set_xlabel('Date')
-        ax3.set_ylabel('Price (USD/oz)')
-        ax3.legend()
-        ax3.grid(True, alpha=0.3)
-        
-        # 4. 수익률 비교 막대 그래프
-        ax4 = axes[1, 1]
+        # 수익률 계산
         returns = {}
+        all_assets = {**INTEREST_STOCKS_US, **CRYPTO}
         
-        # 모든 자산의 30일 수익률 계산
-        all_assets = {**INTEREST_STOCKS_US, **CRYPTO, **PRECIOUS_METALS}
         for symbol, name in all_assets.items():
             try:
                 asset = yf.Ticker(symbol)
@@ -215,26 +202,23 @@ def create_price_chart():
         if returns:
             names = list(returns.keys())
             values = list(returns.values())
-            colors = ['green' if v > 0 else 'red' for v in values]
+            colors = ['#2ecc71' if v > 0 else '#e74c3c' for v in values]
             
-            bars = ax4.barh(names, values, color=colors, alpha=0.7)
-            ax4.set_title('30-Day Returns (%)', fontweight='bold')
-            ax4.set_xlabel('Return (%)')
-            ax4.axvline(x=0, color='black', linestyle='-', linewidth=0.5)
-            ax4.grid(True, alpha=0.3, axis='x')
+            ax.barh(names, values, color=colors, alpha=0.7)
+            ax.set_xlabel('Return (%)', fontsize=12)
+            ax.set_title('30-Day Returns', fontsize=14, fontweight='bold')
+            ax.axvline(x=0, color='black', linestyle='-', linewidth=0.5)
+            ax.grid(True, alpha=0.3, axis='x')
             
-            # 값 표시
             for i, (name, value) in enumerate(zip(names, values)):
-                ax4.text(value, i, f' {value:+.1f}%', 
-                        va='center', fontsize=9)
+                ax.text(value, i, f' {value:+.1f}%', va='center', fontsize=9)
         
         plt.tight_layout()
         
-        # 이미지를 메모리 버퍼에 저장
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+        plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
         buf.seek(0)
-        plt.close()
+        plt.close('all')  # 메모리 해제
         
         print("✅ 차트 생성 완료")
         return buf
@@ -243,91 +227,10 @@ def create_price_chart():
         print(f"❌ 차트 생성 오류: {e}")
         return None
 
-def create_performance_chart():
-    """종목별 성과 비교 차트"""
-    try:
-        print("📊 성과 차트 생성 중...")
-        
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-        fig.suptitle('Performance Comparison', fontsize=16, fontweight='bold')
-        
-        # 1주일, 1개월 수익률 계산
-        week_returns = {}
-        month_returns = {}
-        
-        all_assets = {**INTEREST_STOCKS_US, **CRYPTO}
-        
-        for symbol, name in all_assets.items():
-            try:
-                asset = yf.Ticker(symbol)
-                hist = asset.history(period="1mo")
-                
-                if len(hist) >= 7:
-                    week_old = hist['Close'].iloc[-7]
-                    current = hist['Close'].iloc[-1]
-                    week_ret = ((current - week_old) / week_old) * 100
-                    week_returns[name] = week_ret
-                
-                if len(hist) >= 2:
-                    month_old = hist['Close'].iloc[0]
-                    current = hist['Close'].iloc[-1]
-                    month_ret = ((current - month_old) / month_old) * 100
-                    month_returns[name] = month_ret
-            except:
-                pass
-        
-        # 1주일 수익률 차트
-        if week_returns:
-            names = list(week_returns.keys())
-            values = list(week_returns.values())
-            colors = ['#2ecc71' if v > 0 else '#e74c3c' for v in values]
-            
-            ax1.bar(range(len(names)), values, color=colors, alpha=0.7)
-            ax1.set_xticks(range(len(names)))
-            ax1.set_xticklabels(names, rotation=45, ha='right')
-            ax1.set_title('7-Day Returns (%)', fontweight='bold')
-            ax1.set_ylabel('Return (%)')
-            ax1.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
-            ax1.grid(True, alpha=0.3, axis='y')
-            
-            for i, v in enumerate(values):
-                ax1.text(i, v, f'{v:+.1f}%', ha='center', 
-                        va='bottom' if v > 0 else 'top', fontsize=9)
-        
-        # 1개월 수익률 차트
-        if month_returns:
-            names = list(month_returns.keys())
-            values = list(month_returns.values())
-            colors = ['#3498db' if v > 0 else '#e67e22' for v in values]
-            
-            ax2.bar(range(len(names)), values, color=colors, alpha=0.7)
-            ax2.set_xticks(range(len(names)))
-            ax2.set_xticklabels(names, rotation=45, ha='right')
-            ax2.set_title('30-Day Returns (%)', fontweight='bold')
-            ax2.set_ylabel('Return (%)')
-            ax2.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
-            ax2.grid(True, alpha=0.3, axis='y')
-            
-            for i, v in enumerate(values):
-                ax2.text(i, v, f'{v:+.1f}%', ha='center', 
-                        va='bottom' if v > 0 else 'top', fontsize=9)
-        
-        plt.tight_layout()
-        
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
-        buf.seek(0)
-        plt.close()
-        
-        print("✅ 성과 차트 생성 완료")
-        return buf
-        
-    except Exception as e:
-        print(f"❌ 성과 차트 생성 오류: {e}")
-        return None
-
 def job():
     """정기 리포트 생성 및 전송"""
+    print(f"📊 리포트 생성 시작: {datetime.now()}")
+    
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     report = f"🌍 <b>글로벌 투자 리포트</b> ({now})\n" + "="*30 + "\n\n"
     
@@ -337,6 +240,7 @@ def job():
         info = get_stock_info(s, n, "KR")
         if info:
             report += info + "\n"
+        time.sleep(0.3)
     
     # 2. 미국 주식
     report += "\n🇺🇸 <b>미국 주식</b>\n"
@@ -344,6 +248,7 @@ def job():
         info = get_stock_info(s, n, "US")
         if info:
             report += info + "\n"
+        time.sleep(0.3)
     
     # 3. 암호화폐
     report += "\n💎 <b>암호화폐</b>\n"
@@ -351,7 +256,7 @@ def job():
         info = get_crypto_info(s, n)
         if info:
             report += info + "\n"
-        time.sleep(0.5)
+        time.sleep(0.3)
     
     # 4. 귀금속
     report += "\n🏆 <b>귀금속</b>\n"
@@ -359,49 +264,59 @@ def job():
         info = get_metal_info(s, n)
         if info:
             report += info + "\n"
-        time.sleep(0.5)
+        time.sleep(0.3)
+    
+    # 5. 환율
+    report += "\n💱 <b>환율</b>\n"
+    for s, n in CURRENCIES.items():
+        info = get_currency_info(s, n)
+        if info:
+            report += info + "\n"
+        time.sleep(0.3)
     
     report += "\n" + "="*30
     report += "\n💡 <i>현명한 투자 하세요!</i>"
     
     # 텍스트 리포트 전송
-    send_telegram_message(report)
+    if send_telegram_message(report):
+        print("✅ 텍스트 리포트 전송 완료")
     
-    # 차트 전송
-    time.sleep(2)
-    
-    # 1. 가격 추세 차트
-    chart1 = create_price_chart()
-    if chart1:
-        send_telegram_photo(chart1, caption="📊 30일 가격 추세 및 수익률 비교")
+    # 차트 전송 (활성화된 경우에만)
+    if ENABLE_CHARTS:
         time.sleep(2)
+        chart = create_simple_chart()
+        if chart:
+            send_telegram_photo(chart, caption="📊 30일 수익률 비교")
     
-    # 2. 성과 비교 차트
-    chart2 = create_performance_chart()
-    if chart2:
-        send_telegram_photo(chart2, caption="📈 7일/30일 수익률 비교")
+    print(f"✅ 리포트 작업 완료: {datetime.now()}")
 
 if __name__ == "__main__":
+    print("="*50)
     print("🚀 봇 가동 시작...")
+    print(f"차트 기능: {'활성화' if ENABLE_CHARTS else '비활성화'}")
+    print("="*50)
     
     # Flask 서버 시작
     keep_alive()
     
     # 스케줄 설정
-    schedule.every().day.at("06:00").do(job)
     schedule.every().day.at("09:00").do(job)
-    schedule.every().day.at("12:00").do(job)
     schedule.every().day.at("15:40").do(job)
-    schedule.every().day.at("23:50").do(job)
     
     # 시작 메시지
-    send_telegram_message("✅ 봇이 Render 서버에서 성공적으로 실행되었습니다!\n🔔 매일5번리포트와 차트를 보내드립니다.")
+    chart_msg = " (차트 포함)" if ENABLE_CHARTS else ""
+    send_telegram_message(f"✅ 봇이 Render 서버에서 성공적으로 실행되었습니다{chart_msg}!\n🔔 매일 09:00, 15:40에 리포트를 보내드립니다.")
     
     print("🤖 봇이 실행 중입니다...")
+    print("⏰ 다음 알림: 09:00, 15:40")
     
     try:
         while True:
             schedule.run_pending()
             time.sleep(60)
     except KeyboardInterrupt:
-        print("👋 봇 종료")
+        print("\n👋 봇 종료")
+    except Exception as e:
+        print(f"\n❌ 오류 발생: {e}")
+        # 오류 발생 시 텔레그램으로 알림
+        send_telegram_message(f"⚠️ 봇 오류 발생: {str(e)}")
