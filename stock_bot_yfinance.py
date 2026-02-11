@@ -4,6 +4,7 @@ import requests
 import schedule
 import time
 from datetime import datetime
+import pandas as pd
 from flask import Flask
 from threading import Thread
 import io
@@ -13,12 +14,13 @@ import gc
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import numpy as np
 
 # Flask 서버 (Render 서비스 유지용)
 app = Flask(__name__)
 
 @app.route('/')
-def home(): return "Stock Bot is Running! ✅"
+def home(): return "Global Stock Bot is Running! ✅"
 
 @app.route('/health')
 def health(): return "OK", 200
@@ -34,43 +36,37 @@ def keep_alive():
 TELEGRAM_BOT_TOKEN = "8502208649:AAFtvAb9Au9hxeEZzOK-zN70ZTCEDQO-e7s"
 TELEGRAM_CHAT_ID = "417485629"
 last_update_id = 0
-my_portfolio = {} # 포트폴리오 데이터 (메모리 저장)
+my_portfolio = {} 
 
-# 종목 설정 (M7 + 한국 주요 종목 + 자산)
-ASSETS = {
-    # --- 미국 주식 (M7) ---
-    "AAPL": ["애플", "Apple"],
-    "MSFT": ["마이크로소프트", "MSFT"],
-    "GOOGL": ["구글", "Alphabet"],
-    "AMZN": ["아마존", "Amazon"],
-    "NVDA": ["엔비디아", "Nvidia"],
-    "META": ["메타", "Meta"],
-    "TSLA": ["테슬라", "Tesla"],
-    
-    # --- 한국 주식 ---
-    "005930.KS": ["삼성전자", "Samsung"],
-    "000660.KS": ["SK하이닉스", "Hynix"],
-    "005380.KS": ["현대차", "Hyundai"],
-    "035420.KS": ["NAVER", "Naver"],
-    "035720.KS": ["카카오", "Kakao"],
-    
-    # --- 자산 (코인, 귀금속) ---
-    "BTC-USD": ["비트코인", "Bitcoin"],
-    "ETH-USD": ["이더리움", "Ethereum"],
-    "GC=F": ["금", "Gold"],
-    "SI=F": ["은", "Silver"]
+# 국가 및 자산군별 종목 분류
+ASSETS_CATEGORIZED = {
+    "🌐 글로벌 주요 지수": {
+        "^KS11": "코스피", "^KQ11": "코스닥", 
+        "^GSPC": "S&P500", "^IXIC": "나스닥",
+        "^HSI": "항셍지수", "HSTECH.HK": "항셍테크",
+        "399006.SZ": "차이나넥스트", "000688.SS": "과창판 50"
+    },
+    "🇺🇸 미국 M7": {
+        "AAPL": "애플", "MSFT": "마이크로소프트", "GOOGL": "구글",
+        "AMZN": "아마존", "NVDA": "엔비디아", "META": "메타", "TSLA": "테슬라"
+    },
+    "🇰🇷 한국 주요주": {
+        "005930.KS": "삼성전자", "000660.KS": "SK하이닉스", 
+        "005380.KS": "현대차", "035420.KS": "NAVER", "035720.KS": "카카오"
+    },
+    "🇭🇰 홍콩/중국 M7+": {
+        "0700.HK": "텐센트", "9988.HK": "알리바바", "3690.HK": "메이투안",
+        "1810.HK": "샤오미", "9888.HK": "바이두", "9999.HK": "넷이즈", "9618.HK": "JD닷컴"
+    },
+    "🪙 자산 (코인/금속)": {
+        "BTC-USD": "비트코인", "ETH-USD": "이더리움", 
+        "GC=F": "금", "SI=F": "은"
+    }
 }
 
-# --- 보조 기능 함수 ---
-def get_rsi(series, period=14):
-    delta = series.diff()
-    up = delta.clip(lower=0)
-    down = -1 * delta.clip(upper=0)
-    ema_up = up.ewm(com=period - 1, adjust=False).mean()
-    ema_down = down.ewm(com=period - 1, adjust=False).mean()
-    rs = ema_up / ema_down
-    return 100 - (100 / (1 + rs))
+ALL_ASSETS = {sym: name for cat in ASSETS_CATEGORIZED.values() for sym, name in cat.items()}
 
+# --- 기능 함수 ---
 def get_news(symbol):
     try:
         news = yf.Ticker(symbol).news[:2]
@@ -89,105 +85,89 @@ def send_photo(image_buffer, caption="", chat_id=None):
     try: requests.post(url, files={'photo': ('chart.png', image_buffer)}, data={'chat_id': chat_id, 'caption': caption}, timeout=30)
     except: pass
 
-# --- 핵심 로직 함수 ---
-def get_asset_info(symbol, name):
+def get_all_returns(symbol):
     try:
         ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="1mo")
-        if hist.empty: return None
-        
+        hist = ticker.history(period="2y")
+        if len(hist) < 2: return None
         curr = hist['Close'].iloc[-1]
-        change = ((curr - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2] * 100)
-        rsi = get_rsi(hist['Close']).iloc[-1]
-        news = get_news(symbol)
-        
-        unit = "원" if ".KS" in symbol else "$"
-        detail = (f"📊 <b>{name}</b> ({symbol})\n"
-                  f"💰 현재가: {curr:,.2f}{unit} ({change:+.2f}%)\n"
-                  f"📈 RSI: {rsi:.1f} ({'🔥과열' if rsi>70 else '❄️침체' if rsi<30 else '보통'})\n"
-                  f"📰 <b>최신 뉴스</b>\n{news}")
-        return {'text': f"🔹 {name}: {curr:,.0f}{unit} ({change:+.1f}%)", 'detail': detail}
+        p_1d, p_1w, p_1m = hist['Close'].iloc[-2], hist['Close'].iloc[-6], hist['Close'].iloc[-22]
+        start_of_year = datetime(datetime.now().year, 1, 1).date()
+        ytd_data = hist.loc[hist.index.date >= start_of_year]
+        p_ytd = ytd_data['Close'].iloc[0] if not ytd_data.empty else hist['Close'].iloc[0]
+        def c(p): return ((curr - p) / p * 100)
+        return {"1D": c(p_1d), "1W": c(p_1w), "1M": c(p_1m), "YTD": c(p_ytd), "curr": curr}
     except: return None
 
-def create_yield_chart():
+def create_multi_period_chart():
     try:
-        returns = {}
-        for sym, names in ASSETS.items():
-            h = yf.Ticker(sym).history(period="1mo")
-            if len(h) > 2:
-                returns[names[1]] = ((h['Close'].iloc[-1] - h['Close'].iloc[0]) / h['Close'].iloc[0]) * 100
+        chart_data = []
+        for cat_name, stocks in ASSETS_CATEGORIZED.items():
+            for sym, name in stocks.items():
+                r = get_all_returns(sym)
+                if r: chart_data.append({'Name': f"{name}({cat_name[:2]})", '7D': r['1W'], '30D': r['1M'], 'YTD': r['YTD']})
         
-        fig, ax = plt.subplots(figsize=(10, 8))
-        colors = ['#2ecc71' if v > 0 else '#e74c3c' for v in returns.values()]
-        ax.barh(list(returns.keys()), list(returns.values()), color=colors)
-        ax.set_title("30-Day Returns (%)", fontsize=15)
-        ax.axvline(0, color='black', linewidth=0.8)
+        df = pd.DataFrame(chart_data)
+        fig, ax = plt.subplots(figsize=(12, 18))
+        y = np.arange(len(df))
+        ax.barh(y + 0.25, df['7D'], 0.25, label='7 Days', color='#3498db')
+        ax.barh(y, df['30D'], 0.25, label='30 Days', color='#2ecc71')
+        ax.barh(y - 0.25, df['YTD'], 0.25, label='YTD', color='#f1c40f')
+        ax.set_yticks(y); ax.set_yticklabels(df['Name'])
+        ax.legend(); ax.axvline(0, color='black', linewidth=0.8); ax.grid(axis='x', alpha=0.3)
         plt.tight_layout()
-        
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png', dpi=100)
-        buf.seek(0)
-        plt.close('all')
-        gc.collect()
+        buf = io.BytesIO(); plt.savefig(buf, format='png', dpi=120); buf.seek(0)
+        plt.close('all'); gc.collect()
         return buf
     except: return None
 
-def calculate_portfolio():
-    if not my_portfolio: return "📝 등록된 포트폴리오가 없습니다.\n'포트폴리오 추가 [이름] [단가] [수량]'"
-    total_buy, total_eval, report = 0, 0, "💰 <b>내 포트폴리오</b>\n\n"
-    for name, data in my_portfolio.items():
-        try:
-            curr = yf.Ticker(data['symbol']).history(period="1d")['Close'].iloc[-1]
-            buy_total, eval_total = data['price'] * data['count'], curr * data['count']
-            total_buy += buy_total; total_eval += eval_total
-            ratio = (eval_total - buy_total) / buy_total * 100
-            unit = "원" if ".KS" in data['symbol'] else "$"
-            report += f"📍 <b>{name}</b>\n   수익률: {ratio:+.2f}% | 수익: {eval_total-buy_total:,.0f}{unit}\n"
-        except: continue
-    
-    if total_buy > 0:
-        total_profit = total_eval - total_buy
-        report += f"\n{'='*20}\n💵 총 수익: {total_profit:,.0f} ({total_profit/total_buy*100-100:+.2f}%)"
-    return report
-
 def handle_command(text, chat_id):
-    global my_portfolio
     text = text.lower().strip()
-    
     if text in ['전체', '리포트', 'all']:
-        send_message("🌍 전체 리포트 생성 중...")
-        msg = f"🌍 <b>금융 리포트</b> ({datetime.now().strftime('%m/%d %H:%M')})\n"
-        for sym, names in ASSETS.items():
-            info = get_asset_info(sym, names[0])
-            if info: msg += info['text'] + "\n"
+        msg = f"🌍 <b>글로벌 마켓 통합 리포트</b>\n({datetime.now().strftime('%m/%d %H:%M')})\n"
+        msg += "<code>단위: 1D / 1W / YTD</code>\n"
+        
+        for cat, stocks in ASSETS_CATEGORIZED.items():
+            msg += f"\n<b>[{cat}]</b>\n"
+            for sym, name in stocks.items():
+                r = get_all_returns(sym)
+                if r:
+                    # 일간, 주간, 연초대비 수익률을 한 줄에 표시
+                    msg += f" • {name}: {r['1D']:+.1f}% / {r['1W']:+.1f}% / {r['YTD']:+.1f}%\n"
         send_message(msg, chat_id)
     
     elif text in ['차트', 'chart']:
-        send_message("📊 수익률 차트 분석 중...")
-        chart = create_yield_chart()
-        if chart: send_photo(chart, "📊 최근 30일 수익률 비교", chat_id)
-        
-    elif text.startswith("포트폴리오 추가"):
-        try:
-            p = text.split()
-            name_in, price, count = p[2], float(p[3]), float(p[4])
-            for sym, names in ASSETS.items():
-                if name_in in names[0].lower() or name_in in names[1].lower():
-                    my_portfolio[names[0]] = {"symbol": sym, "price": price, "count": count}
-                    send_message(f"✅ {names[0]} 등록 완료!", chat_id)
-                    return
-            send_message("❌ 종목을 찾을 수 없습니다.", chat_id)
-        except: send_message("❌ 사용법: 포트폴리오 추가 삼성 70000 10", chat_id)
-        
+        send_message("📊 통합 수익률 차트 생성 중...", chat_id)
+        chart = create_multi_period_chart()
+        if chart: send_photo(chart, "📊 기간별 수익률 분석 (Blue: 7D / Green: 30D / Yellow: YTD)", chat_id)
+
     elif text in ['포트폴리오', 'pf']:
-        send_message(calculate_portfolio(), chat_id)
+        if not my_portfolio:
+            send_message("📝 등록된 포트폴리오가 없습니다. '포트폴리오 추가 [이름] [단가] [수량]'으로 등록하세요.", chat_id)
+        else:
+            msg = "💰 <b>내 자산 멀티 수익률</b>\n<code>단위: 현재가 / 수익률 / YTD</code>\n"
+            for cat, stocks in ASSETS_CATEGORIZED.items():
+                cat_msg = ""
+                for sym, name in stocks.items():
+                    if name in my_portfolio:
+                        d = my_portfolio[name]
+                        r = get_all_returns(sym)
+                        if r:
+                            gain = (r['curr'] - d['price']) / d['price'] * 100
+                            unit = "HKD" if ".HK" in sym or ".SS" in sym else "원" if ".KS" in sym else "$"
+                            cat_msg += f" • {name}: {r['curr']:,.0f}{unit} / {gain:+.1f}% / {r['YTD']:+.1f}%\n"
+                if cat_msg: msg += f"\n<b>[{cat}]</b>\n" + cat_msg
+            send_message(msg, chat_id)
 
     else:
-        for sym, names in ASSETS.items():
-            if text in names[0].lower() or text in names[1].lower():
-                info = get_asset_info(sym, names[0])
-                if info: send_message(info['detail'], chat_id)
-                return
+        for sym, name in ALL_ASSETS.items():
+            if text in name.lower() or text in sym.lower():
+                r = get_all_returns(sym)
+                if r:
+                    unit = "HKD" if ".HK" in sym or ".SS" in sym or ".SZ" in sym else "원" if ".KS" in sym else "$"
+                    msg = f"📊 <b>{name}</b> ({sym})\n💰 현재가: {r['curr']:,.2f}{unit}\n\n1D: {r['1D']:+.2f}%\n1W: {r['1W']:+.2f}%\n1M: {r['1M']:+.2f}%\nYTD: {r['YTD']:+.2f}%\n\n📰 <b>최신 뉴스</b>\n{get_news(sym)}"
+                    send_message(msg, chat_id)
+                    return
 
 def check_messages():
     global last_update_id
@@ -200,22 +180,22 @@ def check_messages():
                 handle_command(u['message']['text'], u['message']['chat']['id'])
     except: pass
 
-def scheduled_job():
-    report = calculate_portfolio()
-    send_message("⏰ <b>정기 자산 보고</b>\n" + report)
-
+# --- 메인 실행부 ---
 if __name__ == "__main__":
     keep_alive()
-    # 보고 시간 설정
-    times = ["09:00", "15:40", "22:30"]
-    for t in times: schedule.every().day.at(t).do(scheduled_job)
     
-    send_message("🚀 <b>알림 봇 가동!</b>\n\n• 전체: 시장 리포트\n• 차트: 30일 수익률\n• pf: 수익률 계산\n• 종목명: 상세 정보")
-    
-    try:
-        while True:
-            schedule.run_pending()
-            check_messages()
-            time.sleep(5)
-    except KeyboardInterrupt:
-        print("Bot Stopped")
+    # 6단계 자동 스케줄 보고
+    schedule.every().day.at("09:05").do(lambda: handle_command('전체', TELEGRAM_CHAT_ID)) # 국장 개장
+    schedule.every().day.at("10:35").do(lambda: handle_command('전체', TELEGRAM_CHAT_ID)) # 항셍 개장
+    schedule.every().day.at("15:40").do(lambda: handle_command('전체', TELEGRAM_CHAT_ID)) # 국장 마감
+    schedule.every().day.at("17:05").do(lambda: handle_command('전체', TELEGRAM_CHAT_ID)) # 항셍 마감
+    schedule.every().day.at("22:35").do(lambda: handle_command('전체', TELEGRAM_CHAT_ID)) # 미장 개장
+    schedule.every().day.at("06:05").do(lambda: handle_command('전체', TELEGRAM_CHAT_ID)) # 미장 마감
+
+    print("🚀 글로벌 멀티 리포트 봇 가동!")
+    send_message("✅ <b>글로벌 멀티 리포트 봇 가동</b>\n이제 '전체' 리포트에서 1D/1W/YTD 수익률을 한 번에 확인하세요.")
+
+    while True:
+        schedule.run_pending()
+        check_messages()
+        time.sleep(5)
