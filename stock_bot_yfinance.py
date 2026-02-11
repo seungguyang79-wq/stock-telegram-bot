@@ -17,19 +17,34 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import numpy as np
 
-# 나눔고딕 폰트 다운로드 및 설정 (Render/Linux 환경 대응)
 def setup_font():
+    """Render 서버 환경에서 한글 깨짐 방지를 위해 폰트를 다운로드하고 등록합니다."""
     font_url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf"
-    res = requests.get(font_url)
-    with open("NanumGothic.ttf", "wb") as f:
-        f.write(res.content)
-    fe = fm.FontEntry(fname="NanumGothic.ttf", name="NanumGothic")
-    fm.font_manager.ttflist.insert(0, fe)
-    plt.rcParams.update({'font.family': "NanumGothic", 'axes.unicode_minus': False})
+    font_path = "NanumGothic.ttf"
+    try:
+        # 폰트가 없을 경우에만 다운로드
+        if not os.path.exists(font_path):
+            res = requests.get(font_url)
+            with open(font_path, "wb") as f:
+                f.write(res.content)
+        
+        # 폰트 등록 (에러 수정: fontManager 대문자 사용)
+        fe = fm.FontEntry(fname=font_path, name="NanumGothic")
+        fm.fontManager.ttflist.insert(0, fe) 
+        
+        # 기본 폰트 설정 및 마이너스 기호 깨짐 방지
+        plt.rcParams.update({
+            'font.family': "NanumGothic",
+            'axes.unicode_minus': False,
+            'font.size': 10
+        })
+        print("✅ 한글 폰트(나눔고딕) 설정이 완료되었습니다.")
+    except Exception as e:
+        print(f"❌ 폰트 설정 중 오류 발생: {e}")
 
-setup_font() # 폰트 설정 실행
+setup_font()
 
-# --- Flask 서버 ---
+# --- Flask 서버 (Render 유지용) ---
 app = Flask(__name__)
 @app.route('/')
 def home(): return "Global Stock Bot is Running! ✅"
@@ -64,7 +79,7 @@ ASSETS_CATEGORIZED = {
 
 ALL_ASSETS = {sym: name for cat in ASSETS_CATEGORIZED.values() for sym, name in cat.items()}
 
-# --- 핵심 기능 함수 ---
+# --- 데이터 수집 및 차트 생성 ---
 def get_all_returns(symbol):
     try:
         ticker = yf.Ticker(symbol)
@@ -86,12 +101,10 @@ def create_multi_period_chart():
             for sym, name in stocks.items():
                 r = get_all_returns(sym)
                 if r:
-                    # 국가 이모지 대신 텍스트로 표기 (폰트 안정성)
-                    label = f"{name}" 
-                    chart_data.append({'Name': label, '7D': r['1W'], '30D': r['1M'], 'YTD': r['YTD']})
+                    chart_data.append({'Name': name, '7D': r['1W'], '30D': r['1M'], 'YTD': r['YTD']})
         
         df = pd.DataFrame(chart_data)
-        fig, ax = plt.subplots(figsize=(10, 16)) # 세로로 더 길게 조정
+        fig, ax = plt.subplots(figsize=(10, 18))
         y = np.arange(len(df))
         
         ax.barh(y + 0.25, df['7D'], 0.25, label='7일', color='#3498db')
@@ -99,11 +112,11 @@ def create_multi_period_chart():
         ax.barh(y - 0.25, df['YTD'], 0.25, label='YTD', color='#f1c40f')
         
         ax.set_yticks(y)
-        ax.set_yticklabels(df['Name'], fontsize=10)
-        ax.set_title(f"글로벌 마켓 수익률 현황 ({datetime.now().strftime('%Y-%m-%d')})", fontsize=15)
+        ax.set_yticklabels(df['Name'])
+        ax.set_title(f"글로벌 수익률 현황 ({datetime.now().strftime('%Y-%m-%d')})")
         ax.legend()
         ax.axvline(0, color='black', linewidth=1)
-        ax.grid(axis='x', linestyle='--', alpha=0.5)
+        ax.grid(axis='x', linestyle='--', alpha=0.4)
         
         plt.tight_layout()
         buf = io.BytesIO()
@@ -113,7 +126,7 @@ def create_multi_period_chart():
         gc.collect()
         return buf
     except Exception as e:
-        print(f"Chart Error: {e}")
+        print(f"차트 생성 실패: {e}")
         return None
 
 def handle_command(text, chat_id):
@@ -125,12 +138,15 @@ def handle_command(text, chat_id):
             for sym, name in stocks.items():
                 r = get_all_returns(sym)
                 if r: msg += f" • {name}: {r['1D']:+.1f}% / {r['1W']:+.1f}% / {r['YTD']:+.1f}%\n"
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"})
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", 
+                      json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"})
     
     elif text in ['차트', 'chart']:
         chart = create_multi_period_chart()
         if chart:
-            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto", files={'photo': ('chart.png', chart)}, data={'chat_id': chat_id, 'caption': "📊 기간별 수익률 분석 (파랑:7일 / 초록:30일 / 노랑:YTD)"})
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto", 
+                          files={'photo': ('chart.png', chart)}, 
+                          data={'chat_id': chat_id, 'caption': "📊 기간별 수익률 분석 (파랑:7일 / 초록:30일 / 노랑:YTD)"})
 
 def check_messages():
     global last_update_id
@@ -145,14 +161,12 @@ def check_messages():
 
 if __name__ == "__main__":
     keep_alive()
-    # 6단계 스케줄링 로직 (축약)
-    schedule.every().day.at("09:05").do(lambda: handle_command('전체', TELEGRAM_CHAT_ID))
-    schedule.every().day.at("10:35").do(lambda: handle_command('전체', TELEGRAM_CHAT_ID))
-    schedule.every().day.at("15:40").do(lambda: handle_command('전체', TELEGRAM_CHAT_ID))
-    schedule.every().day.at("17:05").do(lambda: handle_command('전체', TELEGRAM_CHAT_ID))
-    schedule.every().day.at("22:35").do(lambda: handle_command('전체', TELEGRAM_CHAT_ID))
-    schedule.every().day.at("06:05").do(lambda: handle_command('전체', TELEGRAM_CHAT_ID))
+    # 6단계 스케줄링 설정
+    times = ["09:05", "10:35", "15:40", "17:05", "22:35", "06:05"]
+    for t in times:
+        schedule.every().day.at(t).do(lambda: handle_command('전체', TELEGRAM_CHAT_ID))
 
+    print("🚀 수정된 폰트 로직으로 봇 가동 시작!")
     while True:
         schedule.run_pending()
         check_messages()
