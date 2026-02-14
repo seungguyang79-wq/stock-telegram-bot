@@ -7,10 +7,10 @@ from datetime import datetime
 from flask import Flask
 from threading import Thread
 
-# --- Flask 서버 ---
+# --- Flask 서버 (Render 유지용) ---
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Market Trend Bot is Online! 📈"
+def home(): return "David-Catalyst Bot: Final & Persistent! ✅"
 
 def run_server():
     port = int(os.environ.get("PORT", 10000))
@@ -24,14 +24,16 @@ TELEGRAM_BOT_TOKEN = "8502208649:AAFtvAb9Au9hxeEZzOK-zN70ZTCEDQO-e7s"
 TELEGRAM_CHAT_ID = "417485629"
 DB_FILE = "portfolio.json"
 
+# [지능형 티커 변환 사전]
 TICKER_DICT = {
-    "삼성전자": "005930.KS", "삼성": "005930.KS", "네이버": "035420.KS", "NAVER": "035420.KS",
-    "카카오": "035720.KS", "카카오": "035720.KS", "하이브": "352820.KS", "하이브": "352820.KS",
-    "SK하이닉스": "000660.KS", "하이닉스": "000660.KS", "현대차": "005380.KS",
-    "엔비디아": "NVDA", "테슬라": "TSLA", "애플": "AAPL", "구글": "GOOGL",
-    "비트코인": "BTC-USD", "금": "GC=F", "은": "SI=F"
+    "삼성전자": "005930.KS", "삼성": "005930.KS", "SAMSUNG": "005930.KS",
+    "네이버": "035420.KS", "NAVER": "035420.KS",
+    "SK하이닉스": "000660.KS", "하이닉스": "000660.KS",
+    "엔비디아": "NVDA", "NVIDIA": "NVDA", "NVDA": "NVDA",
+    "테슬라": "TSLA", "TESLA": "TSLA", "금": "GC=F", "은": "SI=F"
 }
 
+# [마켓 리포트 구성]
 ASSETS_CATEGORIZED = {
     "🌐 지수 및 매크로": {"^KS11": "코스피", "^GSPC": "S&P500", "^IXIC": "나스닥", "KRW=X": "환율"},
     "🇺🇸 미국 M7": {"AAPL": "애플", "NVDA": "엔비", "TSLA": "테슬", "MSFT": "미소"},
@@ -39,12 +41,23 @@ ASSETS_CATEGORIZED = {
     "🪙 자산 및 원자재": {"BTC-USD": "비트코인", "GC=F": "금(Gold)", "SI=F": "은(Silver)"}
 }
 
+# --- 데이터 관리 (고정 데이터 포함) ---
 def load_pf():
+    # 배포 시마다 사라지지 않게 하는 기본 데이터
+    default_pf = {
+        "005930.KS": [137600.0, 32.0],  # 삼성전자
+        "035420.KS": [300059.0, 53.0],  # 네이버
+        "NVDA": [51.6, 236.0]           # 엔비디아
+    
+    }
+    
     if os.path.exists(DB_FILE):
         try:
-            with open(DB_FILE, 'r') as f: return json.load(f)
-        except: return {}
-    return {}
+            with open(DB_FILE, 'r') as f:
+                data = json.load(f)
+                return data if data else default_pf
+        except: return default_pf
+    return default_pf
 
 def save_pf(pf_data):
     try:
@@ -54,56 +67,36 @@ def save_pf(pf_data):
 MY_PORTFOLIO = load_pf()
 last_update_id = 0
 
+# --- 핵심 로직 ---
+def get_trend_data(symbol):
+    try:
+        ticker = yf.Ticker(symbol)
+        h = ticker.history(period="2mo")
+        if len(h) < 2: return None
+        curr = h['Close'].iloc[-1]
+        d1 = ((curr - h['Close'].iloc[-2]) / h['Close'].iloc[-2]) * 100
+        w1 = ((curr - h['Close'].iloc[-6]) / h['Close'].iloc[-6]) * 100 if len(h) >= 6 else 0
+        m1 = ((curr - h['Close'].iloc[-21]) / h['Close'].iloc[-21]) * 100 if len(h) >= 21 else 0
+        return {"price": curr, "1D": d1, "1W": w1, "1M": m1}
+    except: return None
+
 def send_msg(text, chat_id=TELEGRAM_CHAT_ID):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=20)
     except: pass
 
-def get_trend_data(symbol):
-    """일간, 주간(5일), 월간(20일) 수익률 계산"""
-    try:
-        ticker = yf.Ticker(symbol)
-        # 넉넉하게 1.5개월치 데이터를 가져옴
-        h = ticker.history(period="2mo")
-        if len(h) < 2: return None
-        
-        curr = h['Close'].iloc[-1]
-        d1 = ((curr - h['Close'].iloc[-2]) / h['Close'].iloc[-2]) * 100
-        w1 = ((curr - h['Close'].iloc[-6]) / h['Close'].iloc[-6]) * 100 if len(h) >= 6 else 0
-        m1 = ((curr - h['Close'].iloc[-21]) / h['Close'].iloc[-21]) * 100 if len(h) >= 21 else 0
-        
-        return {"price": curr, "1D": d1, "1W": w1, "1M": m1}
-    except: return None
-
 def find_ticker(query):
     q = query.strip().upper()
     return TICKER_DICT.get(q, q)
 
-# --- 명령어 기능 ---
-def run_full_report(cid):
-    send_msg("📊 <b>주간/월간 마켓 리포트 분석 중...</b>", cid)
-    report = f"🌍 <b>글로벌 요약 ({datetime.now().strftime('%m/%d %H:%M')})</b>\n"
-    report += "<code>(일간 / 주간 / 월간)</code>\n\n"
-    
-    for cat, stocks in ASSETS_CATEGORIZED.items():
-        report += f"<b>[{cat}]</b>\n"
-        for sym, name in stocks.items():
-            d = get_trend_data(sym)
-            if d:
-                report += f"• {name}: {d['1D']:+.1f}% / {d['1W']:+.1f}% / {d['1M']:+.1f}%\n"
-        report += "\n"
-    send_msg(report, cid)
-
 def run_portfolio_report(cid):
     pf = load_pf()
-    if not pf:
-        send_msg("📝 등록된 자산이 없습니다.", cid)
-        return
-    
     send_msg("⏳ <b>수익률을 정밀 계산 중입니다...</b>", cid)
     try:
-        fx = yf.Ticker("KRW=X").history(period="1d")['Close'].iloc[-1]
+        fx_data = yf.Ticker("KRW=X").history(period="1d")
+        fx = fx_data['Close'].iloc[-1] if not fx_data.empty else 1350
+        
         total_buy, total_curr, pf_detail = 0, 0, ""
 
         for sym, info in pf.items():
@@ -120,7 +113,7 @@ def run_portfolio_report(cid):
             total_buy += b_krw
             total_curr += c_krw
             emoji = "📈" if p_rate > 0 else "📉"
-            pf_detail += f"{emoji} <b>{sym}</b>: {p_rate:+.2f}% (1W:{d['1W']:+.1f}%)\n"
+            pf_detail += f"{emoji} <b>{sym}</b>: {p_rate:+.2f}% (현가:{c_price:,.0f})\n"
 
         total_profit = total_curr - total_buy
         total_rate = (total_profit / total_buy * 100) if total_buy != 0 else 0
@@ -138,7 +131,7 @@ def handle_commands():
             last_update_id = u['update_id']
             if 'message' in u and 'text' in u['message']:
                 text = u['message']['text'].strip()
-                cid = u['message']['chat']['id']
+                cid = str(u['message']['chat']['id'])
                 
                 if text.startswith('/등록'):
                     parts = text.split()
@@ -148,7 +141,16 @@ def handle_commands():
                         save_pf(MY_PORTFOLIO)
                         send_msg(f"✅ <b>{ticker}</b> 등록 완료!", cid)
                 elif text in ['포트', 'pf']: run_portfolio_report(cid)
-                elif text in ['리포트', '전체']: run_full_report(cid)
+                elif text in ['리포트', '전체']:
+                    send_msg("📊 <b>마켓 리포트 분석 중...</b>", cid)
+                    report = f"🌍 <b>글로벌 요약</b>\n<code>(일간 / 주간 / 월간)</code>\n\n"
+                    for cat, stocks in ASSETS_CATEGORIZED.items():
+                        report += f"<b>[{cat}]</b>\n"
+                        for sym, name in stocks.items():
+                            d = get_trend_data(sym)
+                            if d: report += f"• {name}: {d['1D']:+.1f}% / {d['1W']:+.1f}% / {d['1M']:+.1f}%\n"
+                        report += "\n"
+                    send_msg(report, cid)
                 elif text.startswith('/삭제'):
                     parts = text.split()
                     if len(parts) == 2:
@@ -156,12 +158,8 @@ def handle_commands():
                         if target in MY_PORTFOLIO:
                             del MY_PORTFOLIO[target]; save_pf(MY_PORTFOLIO)
                             send_msg(f"🗑 {target} 삭제 완료", cid)
-                elif text.startswith('/s '):
-                    ticker = find_ticker(text[3:])
-                    d = get_trend_data(ticker)
-                    if d: send_msg(f"🔍 <b>{ticker} 현재가</b>\n가격: {d['price']:,.2f}\n1D: {d['1D']:+.2f}%\n1W: {d['1W']:+.2f}%\n1M: {d['1M']:+.2f}%", cid)
-                elif text in ['/help', '도움말', '도움', '/start']:
-                    send_msg("🤖 <b>명령어</b>\n• 리포트 (주/월간 포함)\n• 포트\n• /등록 종목 평단 수량\n• /s 종목명", cid)
+                elif text in ['도움말', '/help']:
+                    send_msg("🤖 <b>명령어</b>\n• 포트: 내 자산 확인\n• 리포트: 시장 현황\n• /등록 종목 평단 수량\n• /삭제 종목명", cid)
     except: pass
 
 if __name__ == "__main__":
