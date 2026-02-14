@@ -9,7 +9,7 @@ from threading import Thread
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Fast Stock Bot is Online! ✅"
+def home(): return "Enhanced Stock Bot is Online! ✅"
 
 def run_server():
     port = int(os.environ.get("PORT", 10000))
@@ -23,6 +23,16 @@ TELEGRAM_BOT_TOKEN = "8502208649:AAFtvAb9Au9hxeEZzOK-zN70ZTCEDQO-e7s"
 TELEGRAM_CHAT_ID = "417485629"
 DB_FILE = "portfolio.json"
 
+# [중요] 한글 이름과 티커 매핑 데이터 (검색용)
+TICKER_MAP = {
+    "삼성전자": "005930.KS", "삼성": "005930.KS",
+    "SK하이닉스": "000660.KS", "하이닉스": "000660.KS",
+    "현대차": "005380.KS", "네이버": "035420.KS", "카카오": "035720.KS",
+    "엔비디아": "NVDA", "테슬라": "TSLA", "애플": "AAPL", "구글": "GOOGL",
+    "아마존": "AMZN", "마이크로소프트": "MSFT", "메타": "META",
+    "비트코인": "BTC-USD", "이더리움": "ETH-USD"
+}
+
 def load_pf():
     if os.path.exists(DB_FILE):
         try:
@@ -33,25 +43,28 @@ def load_pf():
 def save_pf(pf_data):
     with open(DB_FILE, 'w') as f: json.dump(pf_data, f)
 
-MY_PORTFOLIO = load_pf()
-
-# --- 핵심 함수 (속도 최적화) ---
 def send_msg(text, chat_id=TELEGRAM_CHAT_ID):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10)
     except: pass
 
+# 티커 변환 함수 강화
+def convert_to_ticker(name):
+    name = name.strip()
+    # 1. 매핑 테이블에서 확인
+    if name in TICKER_MAP:
+        return TICKER_MAP[name]
+    # 2. 직접 티커 입력 시 (예: NVDA, 005930.KS) 그대로 반환
+    return name.upper()
+
 def get_fast_data(symbol):
-    """데이터 호출을 최소화하여 속도 향상"""
     try:
         ticker = yf.Ticker(symbol)
-        # 1년치 대신 1달치만 가져와서 속도 개선 (YTD는 별도 처리 가능 시 시도)
-        h = ticker.history(period="1mo") 
+        # 속도를 위해 5일치만 가져옴
+        h = ticker.history(period="5d") 
         if h.empty: return None
-        curr = h['Close'].iloc[-1]
-        prev = h['Close'].iloc[-2]
-        return {"price": curr, "1D": ((curr - prev) / prev * 100)}
+        return {"price": h['Close'].iloc[-1]}
     except: return None
 
 def run_portfolio_report(chat_id):
@@ -60,21 +73,22 @@ def run_portfolio_report(chat_id):
         send_msg("📝 등록된 종목이 없습니다.", chat_id)
         return
 
-    send_msg("⏳ <b>데이터 분석 중... (약 3~5초 소요)</b>", chat_id)
+    send_msg("⏳ <b>데이터를 불러오는 중입니다...</b>", chat_id)
     
     total_buy_krw = 0
     total_curr_krw = 0
     pf_detail = ""
+    rate = 1350 # 환율 기본값
     
-    # 환율 정보 (실패 시 기본값)
-    rate = 1350
     fx = get_fast_data("KRW=X")
     if fx: rate = fx['price']
 
     for sym, info in pf.items():
         buy_p, amt = info
         data = get_fast_data(sym)
-        if not data: continue
+        if not data:
+            pf_detail += f"⚠️ <b>{sym}</b>: 데이터 로드 실패\n"
+            continue
         
         is_usd = any(x in sym for x in ["-USD", "=F"]) or (not sym.endswith(".KS") and not sym.endswith(".KQ"))
         c_price = data['price']
@@ -89,7 +103,7 @@ def run_portfolio_report(chat_id):
         pf_detail += f"{emoji} <b>{sym}</b>: {p_rate:+.2f}%\n"
 
     if not pf_detail:
-        send_msg("❌ 데이터를 가져오지 못했습니다. 잠시 후 다시 시도해 주세요.", chat_id)
+        send_msg("❌ 모든 종목의 데이터를 가져오지 못했습니다.", chat_id)
         return
 
     total_profit = total_curr_krw - total_buy_krw
@@ -99,29 +113,33 @@ def run_portfolio_report(chat_id):
     res += f"💰 <b>총 손익: {total_profit:+, .0f}원 ({total_rate:+.2f}%)</b>"
     send_msg(res, chat_id)
 
-# 명령어 핸들러는 이전과 동일... (생략된 부분은 위 구조 유지)
 def handle_commands():
     global last_update_id
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
     try:
         r = requests.get(url, params={"offset": last_update_id + 1, "timeout": 5}, timeout=10)
-        for u in r.json().get('result', []):
+        updates = r.json().get('result', [])
+        for u in updates:
             last_update_id = u['update_id']
             if 'message' in u and 'text' in u['message']:
                 text = u['message']['text'].strip()
                 cid = u['message']['chat']['id']
+                
                 if text.startswith('/등록'):
                     p = text.split()
                     if len(p) == 4:
-                        MY_PORTFOLIO[p[1]] = [float(p[2]), float(p[3])] # 간단화를 위해 입력값 그대로 저장
+                        ticker = convert_to_ticker(p[1])
+                        MY_PORTFOLIO[ticker] = [float(p[2]), float(p[3])]
                         save_pf(MY_PORTFOLIO)
-                        send_msg(f"✅ {p[1]} 등록 완료!", cid)
-                elif text in ['포트', 'pf']: run_portfolio_report(cid)
+                        send_msg(f"✅ <b>{ticker}</b> 등록 완료!", cid)
+                elif text in ['포트', 'pf']:
+                    run_portfolio_report(cid)
     except: pass
 
 if __name__ == "__main__":
     keep_alive()
     last_update_id = 0
+    MY_PORTFOLIO = load_pf()
     while True:
         handle_commands()
         time.sleep(1)
