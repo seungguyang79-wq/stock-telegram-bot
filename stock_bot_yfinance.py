@@ -4,17 +4,14 @@ import requests
 import schedule
 import time
 from datetime import datetime
-import pandas as pd
 from flask import Flask
 from threading import Thread
 import gc
 
 # --- Flask 서버 (Render 유지용) ---
 app = Flask(__name__)
-
 @app.route('/')
-def home(): 
-    return "Multi-Period Stock Bot is Running! ✅"
+def home(): return "Interactive Portfolio Bot is Online! ✅"
 
 def run_server():
     port = int(os.environ.get("PORT", 10000))
@@ -27,10 +24,13 @@ def keep_alive():
 TELEGRAM_BOT_TOKEN = "8502208649:AAFtvAb9Au9hxeEZzOK-zN70ZTCEDQO-e7s"
 TELEGRAM_CHAT_ID = "417485629"
 
+# 텔레그램으로 관리할 포트폴리오 (메모리 저장 방식)
+# 형식: {"AAPL": [평단, 수량], "005930.KS": [평단, 수량]}
+MY_PORTFOLIO = {}
+
 ASSETS_CATEGORIZED = {
     "🌐 지수 및 매크로": {
         "^KS11": "코스피", "^KQ11": "코스닥", "^GSPC": "S&P500", "^IXIC": "나스닥",
-        "^HSI": "항셍지수", "HSTECH.HK": "항셍테크", "399006.SZ": "차이나넥스트", "000688.SS": "과창판 50",
         "KRW=X": "원/달러 환율", "^VIX": "공포지수(VIX)", "^TNX": "미 10년물 금리"
     },
     "🇺🇸 미국 M7": {
@@ -38,15 +38,7 @@ ASSETS_CATEGORIZED = {
         "NVDA": "엔비디아", "META": "메타", "TSLA": "테슬라"
     },
     "🇰🇷 한국 주요주": {
-        "005930.KS": "삼성전자", "000660.KS": "SK하이닉스", "005380.KS": "현대차", 
-        "035420.KS": "NAVER", "035720.KS": "카카오"
-    },
-    "🇭🇰 홍콩/중국 M7+": {
-        "0700.HK": "텐센트", "9988.HK": "알리바바", "3690.HK": "메이투안", 
-        "1810.HK": "샤오미", "9888.HK": "바이두", "9999.HK": "넷이즈", "9618.HK": "JD닷컴"
-    },
-    "🪙 자산": { 
-        "BTC-USD": "비트코인", "ETH-USD": "이더리움", "GC=F": "금", "SI=F": "은" 
+        "005930.KS": "삼성전자", "000660.KS": "SK하이닉스", "005380.KS": "현대차"
     }
 }
 
@@ -54,107 +46,99 @@ last_update_id = 0
 alerted_stocks = set()
 ALERT_THRESHOLD = 5.0 
 
-# --- 수익률 계산 핵심 함수 ---
-
-def get_multi_period_returns(symbol):
-    """1D, 1W, 1M, YTD 수익률을 계산합니다."""
-    try:
-        ticker = yf.Ticker(symbol)
-        # YTD 계산을 위해 최대 2년치 데이터를 가져옵니다.
-        hist = ticker.history(period="2y")
-        if len(hist) < 2: return None
-        
-        curr = hist['Close'].iloc[-1]
-        
-        # 각 기간별 이전 가격 추출 (안전하게 인덱스 확인)
-        p_1d = hist['Close'].iloc[-2]
-        p_1w = hist['Close'].iloc[-6] if len(hist) >= 6 else hist['Close'].iloc[0]
-        p_1m = hist['Close'].iloc[-22] if len(hist) >= 22 else hist['Close'].iloc[0]
-        
-        # YTD (연초 대비) 가격 추출
-        start_of_year = datetime(datetime.now().year, 1, 1).date()
-        ytd_data = hist.loc[hist.index.date >= start_of_year]
-        p_ytd = ytd_data['Close'].iloc[0] if not ytd_data.empty else hist['Close'].iloc[0]
-        
-        def calc_ret(p_old):
-            return ((curr - p_old) / p_old * 100)
-
-        return {
-            "price": curr,
-            "1D": calc_ret(p_1d),
-            "1W": calc_ret(p_1w),
-            "1M": calc_ret(p_1m),
-            "YTD": calc_ret(p_ytd)
-        }
-    except Exception as e:
-        print(f"❌ {symbol} 데이터 오류: {e}")
-        return None
+# --- 핵심 함수 ---
 
 def send_telegram_message(text, chat_id=TELEGRAM_CHAT_ID):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-        requests.post(url, json=payload, timeout=20)
-        return True
-    except: return False
+        requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=20)
+    except: pass
 
-def market_opening_alert(market_name):
-    send_telegram_message(f"🔔 <b>{market_name} 시장 개장 10분 전!</b>\n오늘도 성공적인 투자 되세요! 📈")
-
-def check_market_logic(is_report=False):
-    global alerted_stocks
-    now = datetime.now()
-    today_key = now.strftime("%Y%m%d")
-    
-    if is_report:
-        report_msg = f"🌍 <b>글로벌 마켓 통합 리포트</b>\n📅 {now.strftime('%Y-%m-%d %H:%M')}\n"
-        report_msg += "<code>(1D / 1W / 1M / YTD)</code>\n\n"
-    
-    for cat, stocks in ASSETS_CATEGORIZED.items():
-        if is_report: report_msg += f"<b>[{cat}]</b>\n"
+def get_multi_period_returns(symbol):
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period="2y")
+        if len(hist) < 2: return None
+        curr = hist['Close'].iloc[-1]
+        p_1d = hist['Close'].iloc[-2]
+        p_1w = hist['Close'].iloc[-6] if len(hist) >= 6 else hist['Close'].iloc[0]
+        p_1m = hist['Close'].iloc[-22] if len(hist) >= 22 else hist['Close'].iloc[0]
+        ytd_val = hist.loc[hist.index.date >= datetime(datetime.now().year, 1, 1).date()]
+        p_ytd = ytd_val['Close'].iloc[0] if not ytd_val.empty else hist['Close'].iloc[0]
         
-        for sym, name in stocks.items():
-            data = get_multi_period_returns(sym)
-            if not data: continue
-            
-            # 1. 변동성 알림 (1D 기준)
-            alert_id = f"{today_key}_{sym}"
-            if abs(data['1D']) >= ALERT_THRESHOLD and alert_id not in alerted_stocks:
-                emoji = "📈" if data['1D'] > 0 else "📉"
-                alert_text = (f"{emoji} <b>변동성 경보: {name}</b>\n"
-                              f"변동률: {data['1D']:+.2f}%\n"
-                              f"현재가: {data['price']:,.2f}")
-                if send_telegram_message(alert_text):
-                    alerted_stocks.add(alert_id)
-            
-            # 2. 정기 리포트 메시지 빌드
-            if is_report:
-                report_msg += f"• {name}: {data['1D']:+.1f}% / {data['1W']:+.1f}% / {data['1M']:+.1f}% / {data['YTD']:+.1f}%\n"
-        
-        if is_report: report_msg += "\n"
-    
-    if is_report: send_telegram_message(report_msg)
-    gc.collect()
+        calc = lambda old: ((curr - old) / old * 100)
+        return {"price": curr, "1D": calc(p_1d), "1W": calc(p_1w), "1M": calc(p_1m), "YTD": calc(p_ytd)}
+    except: return None
 
-def search_stock(query, chat_id):
-    symbol = None
-    for cat in ASSETS_CATEGORIZED.values():
-        for s, name in cat.items():
-            if query in name: symbol = s; break
-    if not symbol: symbol = query.upper()
+# --- 텔레그램 관리 기능 ---
+
+def register_asset(query, chat_id):
+    """형식: /등록 종목명(혹은티커) 평단 수량"""
+    try:
+        parts = query.split()
+        name_query = parts[1]
+        buy_price = float(parts[2])
+        amount = float(parts[3])
+        
+        # 이름으로 티커 찾기
+        symbol = name_query
+        for cat in ASSETS_CATEGORIZED.values():
+            for s, name in cat.items():
+                if name_query in name:
+                    symbol = s
+                    break
+        
+        MY_PORTFOLIO[symbol] = [buy_price, amount]
+        send_telegram_message(f"✅ <b>등록 완료</b>\n종목: {symbol}\n평단: {buy_price:,.2f}\n수량: {amount:,.2f}", chat_id)
+    except:
+        send_telegram_message("❌ <b>입력 오류</b>\n형식: <code>/등록 종목명 평단 수량</code>\n(예: /등록 삼성전자 72000 10)", chat_id)
+
+def delete_asset(query, chat_id):
+    """형식: /삭제 종목명"""
+    try:
+        name_query = query.split()[1]
+        target = None
+        for sym in MY_PORTFOLIO.keys():
+            if name_query in sym: target = sym; break
+        
+        if target in MY_PORTFOLIO:
+            del MY_PORTFOLIO[target]
+            send_telegram_message(f"🗑 <b>{target}</b> 삭제 완료", chat_id)
+        else:
+            send_telegram_message("❌ 포트폴리오에 없는 종목입니다.", chat_id)
+    except: pass
+
+def check_portfolio(chat_id):
+    if not MY_PORTFOLIO:
+        send_telegram_message("📝 등록된 포트폴리오가 없습니다.\n<code>/등록</code> 명령어로 추가해 보세요!", chat_id)
+        return
+
+    send_telegram_message("💰 <b>수익률 계산 중...</b>", chat_id)
+    usd_krw = get_multi_period_returns("KRW=X")
+    rate = usd_krw['price'] if usd_krw else 1350
     
-    data = get_multi_period_returns(symbol)
-    if data:
-        msg = (f"🔍 <b>검색 결과: {symbol}</b>\n"
-               f"현재가: {data['price']:,.2f}\n"
-               f"--------------------\n"
-               f"1D (어제): {data['1D']:+.2f}%\n"
-               f"1W (1주): {data['1W']:+.2f}%\n"
-               f"1M (1달): {data['1M']:+.2f}%\n"
-               f"YTD (연초): {data['YTD']:+.2f}%")
-        send_telegram_message(msg, chat_id)
-    else:
-        send_telegram_message(f"❌ '{query}' 정보를 찾을 수 없습니다.", chat_id)
+    total_buy_krw = 0
+    total_curr_krw = 0
+    report = "📋 <b>실시간 포트폴리오</b>\n\n"
+
+    for sym, info in MY_PORTFOLIO.items():
+        buy_p, amt = info
+        data = get_multi_period_returns(sym)
+        if not data: continue
+        
+        is_usd = any(x in sym for x in ["-USD", "=F"]) or (not sym.endswith(".KS") and not sym.endswith(".KQ"))
+        buy_krw = (buy_p * amt * rate) if is_usd else (buy_p * amt)
+        curr_krw = (data['price'] * amt * rate) if is_usd else (data['price'] * amt)
+        p_rate = ((data['price'] - buy_p) / buy_p) * 100
+        
+        total_buy_krw += buy_krw
+        total_curr_krw += curr_krw
+        emoji = "🔴" if p_rate > 0 else "🔵"
+        report += f"{emoji} <b>{sym}</b>: {p_rate:+.2f}%\n"
+
+    total_p_rate = ((total_curr_krw - total_buy_krw) / total_buy_krw) * 100
+    report += f"--------------------\n💰 <b>총 손익: {total_curr_krw - total_buy_krw:+, .0f}원 ({total_p_rate:+.2f}%)</b>"
+    send_telegram_message(report, chat_id)
 
 def handle_commands():
     global last_update_id
@@ -164,23 +148,26 @@ def handle_commands():
         for u in r.json().get('result', []):
             last_update_id = u['update_id']
             if 'message' in u and 'text' in u['message']:
-                text = u['message']['text']
+                text = u['message']['text'].strip()
                 cid = u['message']['chat']['id']
-                if text.startswith('/s '): search_stock(text[3:].strip(), cid)
-                elif text in ['리포트', '전체', 'all']: check_market_logic(is_report=True)
+                
+                if text.startswith('/등록'): register_asset(text, cid)
+                elif text.startswith('/삭제'): delete_asset(text, cid)
+                elif text in ['포트', '포트폴리오']: check_portfolio(cid)
+                elif text in ['/start', '도움말']:
+                    msg = ("🤖 <b>명령어 안내</b>\n\n"
+                           "1️⃣ <b>등록</b>: <code>/등록 종목명 평단 수량</code>\n"
+                           "2️⃣ <b>삭제</b>: <code>/삭제 종목명</code>\n"
+                           "3️⃣ <b>조회</b>: <code>포트</code>\n"
+                           "4️⃣ <b>검색</b>: <code>/s 티커</code>")
+                    send_telegram_message(msg, cid)
     except: pass
 
+# --- 실행부 ---
 if __name__ == "__main__":
     keep_alive()
-    schedule.every(10).minutes.do(check_market_logic, is_report=False)
-    report_times = ["09:05", "10:35", "15:40", "17:05", "22:35", "06:05"]
-    for t in report_times:
-        schedule.every().day.at(t).do(check_market_logic, is_report=True)
-    schedule.every().day.at("08:50").do(market_opening_alert, "국내(KOSPI)")
-    schedule.every().day.at("22:20").do(market_opening_alert, "미국(나스닥)")
-    schedule.every().day.at("00:00").do(lambda: alerted_stocks.clear())
-
-    print("🚀 4개 기간 수익률 봇 가동!")
+    schedule.every(10).minutes.do(lambda: None) # 모니터링 생략(구조 유지)
+    print("🚀 텔레그램 입력형 봇 가동!")
     while True:
         schedule.run_pending()
         handle_commands()
