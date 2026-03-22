@@ -19,7 +19,7 @@ def run_server():
 def keep_alive():
     Thread(target=run_server, daemon=True).start()
 
-# --- 설정 및 데이터베이스 ---
+# --- 설정 및 데이터베이스 --
 TELEGRAM_BOT_TOKEN = "8502208649:AAFtvAb9Au9hxeEZzOK-zN70ZTCEDQO-e7s"
 TELEGRAM_CHAT_ID = "417485629"
 DB_FILE = "portfolio.json"
